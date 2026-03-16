@@ -1,0 +1,141 @@
+import requests
+import json
+import re
+import time
+import html2text
+
+DOMAIN = "www.marketingideas.com"
+BASE_URL = f"https://{DOMAIN}"
+
+COOKIES = {
+    "connect.sid": "s%3A8dnhl9f9r65goMVcCJf2lHRwVZVRgBzf.IEhC6D7AGuUXqeZCGbc4aU2qPArS3wkOjpcCDauJNW8",
+    "substack.sid": "s%3AwYD3poXrMmWLg7MTaxUIuODXGKudmdKi.QpPhcF9UZPBPe5bLLe5iiEbYgzj0oVfKtReplpRcBTk",
+}
+
+session = requests.Session()
+session.cookies.update(COOKIES)
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+})
+
+def get_all_posts():
+    """Get all posts from archive API"""
+    posts = []
+    offset = 0
+    limit = 50
+    
+    while True:
+        url = f"{BASE_URL}/api/v1/archive?sort=new&limit={limit}&offset={offset}"
+        response = session.get(url)
+        batch = response.json()
+        
+        if not batch:
+            break
+            
+        posts.extend(batch)
+        print(f"  Found {len(posts)} posts so far...")
+        
+        if len(batch) < limit:
+            break
+        offset += limit
+        time.sleep(0.5)
+    
+    return posts
+
+def extract_body_html(page_html):
+    """Extract body_html from the _preloads JSON"""
+    # Find the _preloads JSON
+    match = re.search(r'window\._preloads\s*=\s*JSON\.parse\("(.+?)"\)</script>', page_html, re.DOTALL)
+    if not match:
+        return None
+    
+    # The content is a JSON string that's been escaped for embedding in JS
+    json_str = match.group(1)
+    
+    # Unescape the JS string escapes
+    # Replace \" with "
+    json_str = json_str.replace('\\"', '"')
+    # Replace \\ with \
+    json_str = json_str.replace('\\\\', '\\')
+    
+    try:
+        data = json.loads(json_str)
+        post_data = data.get('post', {})
+        return post_data.get('body_html')
+    except json.JSONDecodeError as e:
+        print(f"    JSON decode error: {e}")
+        return None
+
+def html_to_text(html_content):
+    """Convert HTML to clean text"""
+    h = html2text.HTML2Text()
+    h.ignore_links = False
+    h.ignore_images = True
+    h.body_width = 0
+    return h.handle(html_content)
+
+def scrape_post(post):
+    """Scrape full content for a single post"""
+    slug = post.get('slug')
+    title = post.get('title', 'Untitled')
+    url = f"{BASE_URL}/p/{slug}"
+    
+    response = session.get(url)
+    body_html = extract_body_html(response.text)
+    
+    if body_html:
+        return html_to_text(body_html)
+    return None
+
+def main():
+    print("Marketing Ideas Scraper")
+    print("=" * 50)
+    
+    # Get all posts
+    print("\n1. Fetching post list...")
+    posts = get_all_posts()
+    print(f"   Total posts found: {len(posts)}")
+    
+    # Scrape each post
+    print("\n2. Scraping full content...")
+    output_lines = []
+    
+    for i, post in enumerate(posts):
+        title = post.get('title', 'Untitled')
+        date = post.get('post_date', '')[:10]
+        slug = post.get('slug')
+        
+        print(f"   [{i+1}/{len(posts)}] {title[:50]}...")
+        
+        content = scrape_post(post)
+        
+        if content:
+            output_lines.append(f"{'='*60}")
+            output_lines.append(f"TITLE: {title}")
+            output_lines.append(f"DATE: {date}")
+            output_lines.append(f"URL: {BASE_URL}/p/{slug}")
+            output_lines.append(f"{'='*60}")
+            output_lines.append(content)
+            output_lines.append("\n\n")
+            print(f"       ✓ Got content ({len(content)} chars)")
+        else:
+            output_lines.append(f"{'='*60}")
+            output_lines.append(f"TITLE: {title}")
+            output_lines.append(f"DATE: {date}")
+            output_lines.append(f"URL: {BASE_URL}/p/{slug}")
+            output_lines.append(f"[Content not available]")
+            output_lines.append(f"{'='*60}\n\n")
+            print(f"       ✗ No content extracted")
+        
+        time.sleep(1.0)  # Rate limiting
+    
+    # Save output
+    output_file = "marketing_ideas_full.txt"
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(output_lines))
+    
+    print(f"\n3. Done! Saved to {output_file}")
+    print(f"   File size: {len(''.join(output_lines)) / 1024 / 1024:.2f} MB")
+
+if __name__ == "__main__":
+    main()
